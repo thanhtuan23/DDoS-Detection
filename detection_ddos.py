@@ -19,6 +19,20 @@ def ensure_log_directory():
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
 
+def safe_int(value):
+    """Safely convert a value to int, handling FlagValue types"""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        # For FlagValue types, convert to int using the value attribute
+        if hasattr(value, 'value'):
+            return int(value.value)
+        # For bitfield types, convert using int()
+        try:
+            return int(value)
+        except:
+            return 0
+
 def extract_features_from_packet(packet):
     # Initialize a feature vector with zeros for all 32 expected features
     features = np.zeros(32)
@@ -32,39 +46,62 @@ def extract_features_from_packet(packet):
     
     # IP layer features
     if IP in packet:
-        features[index] = packet[IP].version; index += 1
-        features[index] = packet[IP].ihl; index += 1
-        features[index] = packet[IP].tos; index += 1
-        features[index] = packet[IP].len; index += 1
-        features[index] = packet[IP].id; index += 1
-        features[index] = packet[IP].flags; index += 1
-        features[index] = packet[IP].frag; index += 1
-        features[index] = packet[IP].ttl; index += 1
-        features[index] = packet[IP].proto; index += 1
-        features[index] = int.from_bytes(packet[IP].src.to_bytes(4, 'big'), 'big') % 1000; index += 1
-        features[index] = int.from_bytes(packet[IP].dst.to_bytes(4, 'big'), 'big') % 1000; index += 1
+        features[index] = safe_int(packet[IP].version); index += 1
+        features[index] = safe_int(packet[IP].ihl); index += 1
+        features[index] = safe_int(packet[IP].tos); index += 1
+        features[index] = safe_int(packet[IP].len); index += 1
+        features[index] = safe_int(packet[IP].id); index += 1
+        features[index] = safe_int(packet[IP].flags); index += 1
+        features[index] = safe_int(packet[IP].frag); index += 1
+        features[index] = safe_int(packet[IP].ttl); index += 1
+        features[index] = safe_int(packet[IP].proto); index += 1
+        
+        # Handle IP addresses more safely
+        try:
+            src_ip_bytes = packet[IP].src.to_bytes(4, 'big')
+            features[index] = int.from_bytes(src_ip_bytes, 'big') % 1000; index += 1
+        except (TypeError, AttributeError):
+            # Try another approach for IPv4 addresses
+            try:
+                src_ip_parts = packet[IP].src.split('.')
+                src_ip_int = sum(int(part) << (8 * i) for i, part in enumerate(reversed(src_ip_parts)))
+                features[index] = src_ip_int % 1000; index += 1
+            except:
+                features[index] = 0; index += 1
+        
+        try:
+            dst_ip_bytes = packet[IP].dst.to_bytes(4, 'big')
+            features[index] = int.from_bytes(dst_ip_bytes, 'big') % 1000; index += 1
+        except (TypeError, AttributeError):
+            # Try another approach for IPv4 addresses
+            try:
+                dst_ip_parts = packet[IP].dst.split('.')
+                dst_ip_int = sum(int(part) << (8 * i) for i, part in enumerate(reversed(dst_ip_parts)))
+                features[index] = dst_ip_int % 1000; index += 1
+            except:
+                features[index] = 0; index += 1
     else:
         index += 11  # Skip IP features if not present
     
     # TCP layer features
     if TCP in packet:
-        features[index] = packet[TCP].sport; index += 1
-        features[index] = packet[TCP].dport; index += 1
-        features[index] = packet[TCP].seq; index += 1
-        features[index] = packet[TCP].ack; index += 1
-        features[index] = packet[TCP].dataofs; index += 1
-        features[index] = packet[TCP].reserved; index += 1
-        features[index] = packet[TCP].flags; index += 1
-        features[index] = packet[TCP].window; index += 1
-        features[index] = packet[TCP].urgptr; index += 1
+        features[index] = safe_int(packet[TCP].sport); index += 1
+        features[index] = safe_int(packet[TCP].dport); index += 1
+        features[index] = safe_int(packet[TCP].seq) % 10000; index += 1  # Modulo to avoid overflow
+        features[index] = safe_int(packet[TCP].ack) % 10000; index += 1  # Modulo to avoid overflow
+        features[index] = safe_int(packet[TCP].dataofs); index += 1
+        features[index] = safe_int(packet[TCP].reserved); index += 1
+        features[index] = safe_int(packet[TCP].flags); index += 1
+        features[index] = safe_int(packet[TCP].window); index += 1
+        features[index] = safe_int(packet[TCP].urgptr); index += 1
     else:
         index += 9  # Skip TCP features if not present
     
     # UDP layer features
     if UDP in packet:
-        features[index] = packet[UDP].sport; index += 1
-        features[index] = packet[UDP].dport; index += 1
-        features[index] = packet[UDP].len; index += 1
+        features[index] = safe_int(packet[UDP].sport); index += 1
+        features[index] = safe_int(packet[UDP].dport); index += 1
+        features[index] = safe_int(packet[UDP].len); index += 1
     else:
         index += 3  # Skip UDP features if not present
     
@@ -134,6 +171,8 @@ def write_logs_to_file():
         print(f"Logs written to {filename}")
 
 def packet_callback_with_detection(packet, model):
+    # We don't need to print packet summary for every packet anymore
+    # Only print when DDoS is detected
     detect_ddos(packet, model)
 
 def capture_packets_with_detection(model):
@@ -144,13 +183,25 @@ def capture_packets_with_detection(model):
     
     # Try to capture from both WiFi and Ethernet interfaces
     if system_platform == "Linux":
-        interfaces = ["eth0", "wlan0","ens33"]  # Common Linux interface names
+        interfaces = ["eth0", "wlan0", "ens33"]  # Common Linux interface names
+        
+        # Try each interface one by one
         for iface in interfaces:
             try:
                 print(f"Attempting to capture on interface: {iface}")
+                # This line will block until an error occurs or the program is terminated
                 sniff(iface=iface, prn=lambda pkt: packet_callback_with_detection(pkt, model), store=False)
+                # If we get here, sniffing was successful on this interface
+                break
             except Exception as e:
                 print(f"Failed to capture on {iface}: {e}")
+        
+        # If all explicit interfaces failed, try default interface
+        try:
+            print("Attempting to capture on default interface")
+            sniff(prn=lambda pkt: packet_callback_with_detection(pkt, model), store=False)
+        except Exception as e:
+            print(f"Failed to capture on default interface: {e}")
     
     elif system_platform == "Windows":
         # Get all available interfaces
@@ -164,8 +215,17 @@ def capture_packets_with_detection(model):
                     iface_name = interface['name']
                     print(f"Attempting to capture on interface: {iface_name}")
                     sniff(iface=iface_name, prn=lambda pkt: packet_callback_with_detection(pkt, model), store=False)
+                    # If we get here, sniffing was successful on this interface
+                    break
                 except Exception as e:
                     print(f"Failed to capture on {iface_name}: {e}")
+            
+            # If all explicit interfaces failed, try default interface
+            try:
+                print("Attempting to capture on default interface")
+                sniff(prn=lambda pkt: packet_callback_with_detection(pkt, model), store=False)
+            except Exception as e:
+                print(f"Failed to capture on default interface: {e}")
         else:
             # Fallback to default interface
             try:
