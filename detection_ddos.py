@@ -117,25 +117,7 @@ def extract_features_from_packet(packet):
     assert len(features) == 32, f"Expected 32 features, got {len(features)}"
     
     return features
-
-def block_ip(ip_address):
-    """Block the given IP address using system-specific firewall commands"""
-    system_platform = platform.system()
-    
-    try:
-        if system_platform == "Linux":
-            # Use iptables to block the IP
-            print(f"Blocking IP: {ip_address} on Linux")
-            subprocess.run(["sudo", "iptables", "-A", "INPUT", "-s", ip_address, "-j", "DROP"])
-        elif system_platform == "Windows":
-            # Use netsh to block the IP on Windows
-            print(f"Blocking IP: {ip_address} on Windows")
-            subprocess.run(["netsh", "advfirewall", "firewall", "add", "rule", "name=BlockDDoS", "dir=in", "action=block", "remoteip=" + ip_address])
-        else:
-            print(f"Unsupported platform: {system_platform}")
-    except Exception as e:
-        print(f"Failed to block IP {ip_address}: {e}")
-        
+       
 
 def detect_ddos(packet, model):
     global ddos_logs, last_log_time, detected_ips
@@ -168,7 +150,20 @@ def detect_ddos(packet, model):
                     detected_ips.add(src_ip)
 
                     # Block the IP address
-                    block_ip(src_ip)
+                    try:
+                        system_platform = platform.system()  # Ensure system_platform is defined
+                        if system_platform == "Linux":
+                            # Use iptables to block the IP
+                            print(f"Blocking IP: {src_ip} on Linux")
+                            subprocess.run(["iptables", "-A", "INPUT", "-s", src_ip, "-j", "DROP"])
+                        elif system_platform == "Windows":
+                            # Use netsh to block the IP on Windows
+                            print(f"Blocking IP: {src_ip} on Windows")
+                            subprocess.run(["netsh", "advfirewall", "firewall", "add", "rule", "name=BlockDDoS", "dir=in", "action=block", "remoteip=" + src_ip])
+                        else:
+                            print(f"Unsupported platform: {system_platform}")
+                    except Exception as e:
+                        print(f"Failed to block IP {src_ip}: {e}")
             
             # Check if 10 minutes have passed since last log file creation
             current_time = time.time()
