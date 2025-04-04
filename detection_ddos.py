@@ -5,7 +5,6 @@ import numpy as np
 import time
 from datetime import datetime
 import os
-import subprocess
 
 # Store detected DDoS IPs to avoid duplicate reports
 detected_ips = set()
@@ -180,27 +179,22 @@ def packet_callback_with_detection(packet, model):
     detect_ddos(packet, model)
 
 def block_ip(ip_address):
-    #dung os.system(f"sudo iptables -A INPUT -s {src_ip} -j DROP")
-    system_platform = platform.system()
-
-    if system_platform == "Linux":
-        # Use iptables to block the IP address on Linux
-        command = f"sudo iptables -A INPUT -s {ip_address} -j DROP"
-        try:
+    system = platform.system()
+    try:
+        if system == "Windows":
+            # Block IP on Windows using netsh
+            command = f'netsh advfirewall firewall add rule name="BlockIP_{ip_address}" dir=in action=block remoteip={ip_address}'
             subprocess.run(command, shell=True, check=True)
-            print(f"Blocked IP {ip_address} using iptables.")
-        except subprocess.CalledProcessError as e:
-            print(f"Failed to block IP {ip_address}: {e}")
-    elif system_platform == "Windows":
-        # Use netsh to block the IP address on Windows
-        command = f"netsh advfirewall firewall add rule name=\"Block {ip_address}\" dir=in action=block remoteip={ip_address}"
-        try:
+            print(f"IP {ip_address} has been blocked on Windows.")
+        elif system == "Linux":
+            # Block IP on Linux using iptables
+            command = f'sudo iptables -A INPUT -s {ip_address} -j DROP'
             subprocess.run(command, shell=True, check=True)
-            print(f"Blocked IP {ip_address} using netsh.")
-        except subprocess.CalledProcessError as e:
-            print(f"Failed to block IP {ip_address}: {e}")
-    else:
-        print(f"Unsupported platform: {system_platform}. Cannot block IP {ip_address}.")
+            print(f"IP {ip_address} has been blocked on Linux.")
+        else:
+            print("Unsupported operating system.")
+    except subprocess.CalledProcessError as e:
+        print(f"Failed to block IP {ip_address}: {e}")
 
 
 def capture_packets_with_detection(model):
