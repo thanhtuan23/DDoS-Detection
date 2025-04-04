@@ -182,49 +182,16 @@ def packet_callback_with_detection(packet, model):
 def block_ip(ip_address):
     system_platform = platform.system()
     
-    try:
-        if system_platform == "Linux":
-            # Check if the IP is already blocked to avoid duplicate rules
-            existing = subprocess.run(
-                ["sudo", "iptables", "-C", "INPUT", "-s", ip_address, "-j", "DROP"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-            if existing.returncode != 0:
-                subprocess.run(["sudo", "iptables", "-A", "INPUT", "-s", ip_address, "-j", "DROP"], check=True)
-                print(f"[+] Blocked IP on Linux: {ip_address}")
-            else:
-                print(f"[!] IP already blocked: {ip_address}")
-
-        elif system_platform == "Windows":
-            # Rule name is fixed to avoid duplicates
-            rule_name = f"Block_{ip_address}"
-            existing = subprocess.run(
-                [
-                    "netsh", "advfirewall", "firewall", "show", "rule",
-                    f"name={rule_name}"
-                ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL
-            )
-            if "No rules match the specified criteria" in existing.stdout.decode():
-                subprocess.run(
-                    [
-                        "netsh", "advfirewall", "firewall", "add", "rule",
-                        f"name={rule_name}", "dir=in", "action=block", f"remoteip={ip_address}"
-                    ],
-                    check=True
-                )
-                print(f"[+] Blocked IP on Windows: {ip_address}")
-            else:
-                print(f"[!] IP already blocked: {ip_address}")
-        else:
-            print(f"[!] Unsupported platform: {system_platform}")
-    
-    except subprocess.CalledProcessError as e:
-        print(f"[!] Error blocking IP: {e}")
-    except Exception as e:
-        print(f"[!] Unexpected error: {e}")
+    if system_platform == "Linux":
+        # Use iptables to block the IP address
+        subprocess.call(["sudo", "iptables", "-A", "INPUT", "-s", ip_address, "-j", "DROP"])
+        print(f"Blocked IP {ip_address} using iptables.")
+    elif system_platform == "Windows":
+        # Use netsh to block the IP address
+        subprocess.call(["netsh", "advfirewall", "firewall", "add", "rule", f"name=\"Block {ip_address}\"", f"dir=in", f"action=block", f"remoteip={ip_address}"])
+        print(f"Blocked IP {ip_address} using netsh.")
+    else:
+        print(f"Unsupported platform for blocking IP: {system_platform}")
 
 
 
