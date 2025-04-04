@@ -5,6 +5,7 @@ import numpy as np
 import time
 from datetime import datetime
 import os
+import subprocess
 
 # Store detected DDoS IPs to avoid duplicate reports
 detected_ips = set()
@@ -178,16 +179,37 @@ def packet_callback_with_detection(packet, model):
     # Only print when DDoS is detected
     detect_ddos(packet, model)
 
-
-#block iptables
 def block_ip(ip_address):
     system_platform = platform.system()
-    if system_platform == "Linux":
-        os.system(f"iptables -A INPUT -s {ip_address} -j DROP")
-    elif system_platform == "Windows":
-        os.system(f"netsh advfirewall firewall add rule name=\"Block {ip_address}\" dir=in action=block remoteip={ip_address}")
-    else:
-        print(f"Unsupported platform: {system_platform}")
+    
+    try:
+        if system_platform == "Linux":
+            # Check if the IP is already blocked to avoid duplicate rules
+            existing = subprocess.run(
+                ["iptables", "-C", "INPUT", "-s", ip_address, "-j", "DROP"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            if existing.returncode != 0:
+                subprocess.run(["sudo", "iptables", "-A", "INPUT", "-s", ip_address, "-j", "DROP"])
+                print(f"[+] Blocked IP on Linux: {ip_address}")
+            else:
+                print(f"[!] IP already blocked: {ip_address}")
+
+        elif system_platform == "Windows":
+            # Rule name is fixed to avoid duplicates
+            rule_name = f"Block_{ip_address}"
+            subprocess.run([
+                "netsh", "advfirewall", "firewall", "add", "rule",
+                f"name={rule_name}", "dir=in", "action=block", f"remoteip={ip_address}"
+            ])
+            print(f"[+] Blocked IP on Windows: {ip_address}")
+        else:
+            print(f"[!] Unsupported platform: {system_platform}")
+    
+    except Exception as e:
+        print(f"[!] Error blocking IP: {e}")
+
 
 
 def capture_packets_with_detection(model):
