@@ -1,4 +1,5 @@
 import platform
+import subprocess
 from scapy.all import sniff, IP, TCP, UDP
 import joblib
 import numpy as np
@@ -117,6 +118,25 @@ def extract_features_from_packet(packet):
     
     return features
 
+def block_ip(ip_address):
+    """Block the given IP address using system-specific firewall commands"""
+    system_platform = platform.system()
+    
+    try:
+        if system_platform == "Linux":
+            # Use iptables to block the IP
+            print(f"Blocking IP: {ip_address} on Linux")
+            subprocess.run(["sudo", "iptables", "-A", "INPUT", "-s", ip_address, "-j", "DROP"])
+        elif system_platform == "Windows":
+            # Use netsh to block the IP on Windows
+            print(f"Blocking IP: {ip_address} on Windows")
+            subprocess.run(["netsh", "advfirewall", "firewall", "add", "rule", "name=BlockDDoS", "dir=in", "action=block", "remoteip=" + ip_address])
+        else:
+            print(f"Unsupported platform: {system_platform}")
+    except Exception as e:
+        print(f"Failed to block IP {ip_address}: {e}")
+        
+
 def detect_ddos(packet, model):
     global ddos_logs, last_log_time, detected_ips
     
@@ -137,9 +157,6 @@ def detect_ddos(packet, model):
                 if src_ip not in detected_ips:
                     detection_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     log_entry = f"[{detection_time}] DDoS attack detected from IP: {src_ip}"
-
-                    # Block the IP address
-                    block_ip(src_ip)
                     
                     # Print to console
                     print(log_entry)
@@ -149,10 +166,13 @@ def detect_ddos(packet, model):
                     
                     # Add to detected IPs set
                     detected_ips.add(src_ip)
+
+                    # Block the IP address
+                    block_ip(src_ip)
             
             # Check if 10 minutes have passed since last log file creation
             current_time = time.time()
-            if current_time - last_log_time >= 600:  # 600 seconds = 10 minutes
+            if current_time - last_log_time >= 60:  # 60 seconds = 1 minutes
                 write_logs_to_file()
                 last_log_time = current_time
                 # Clear the logs after writing to file
@@ -178,30 +198,12 @@ def packet_callback_with_detection(packet, model):
     # Only print when DDoS is detected
     detect_ddos(packet, model)
 
-def block_ip(ip_address):
-    system = platform.system()
-    try:
-        if system == "Windows":
-            # Block IP on Windows using netsh
-            command = f'netsh advfirewall firewall add rule name="BlockIP_{ip_address}" dir=in action=block remoteip={ip_address}'
-            subprocess.run(command, shell=True, check=True)
-            print(f"IP {ip_address} has been blocked on Windows.")
-        elif system == "Linux":
-            # Block IP on Linux using iptables
-            command = f'sudo iptables -A INPUT -s {ip_address} -j DROP'
-            subprocess.run(command, shell=True, check=True)
-            print(f"IP {ip_address} has been blocked on Linux.")
-        else:
-            print("Unsupported operating system.")
-    except subprocess.CalledProcessError as e:
-        print(f"Failed to block IP {ip_address}: {e}")
-
 
 def capture_packets_with_detection(model):
     system_platform = platform.system()
     
     print(f"Starting DDoS detection on {system_platform}...")
-    print("Only logging detected DDoS IPs. Log files will be created every 10 minutes.")
+    print("Only logging detected DDoS IPs. Log files will be created every 1 minutes.")
     
     # Try to capture from both WiFi and Ethernet interfaces
     if system_platform == "Linux":
