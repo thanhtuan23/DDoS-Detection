@@ -180,19 +180,27 @@ def packet_callback_with_detection(packet, model):
     detect_ddos(packet, model)
 
 def block_ip(ip_address):
+    #dung os.system(f"sudo iptables -A INPUT -s {src_ip} -j DROP")
     system_platform = platform.system()
-    
-    if system_platform == "Linux":
-        # Use iptables to block the IP address
-        subprocess.call(["sudo", "iptables", "-A", "INPUT", "-s", ip_address, "-j", "DROP"])
-        print(f"Blocked IP {ip_address} using iptables.")
-    elif system_platform == "Windows":
-        # Use netsh to block the IP address
-        subprocess.call(["netsh", "advfirewall", "firewall", "add", "rule", f"name=\"Block {ip_address}\"", f"dir=in", f"action=block", f"remoteip={ip_address}"])
-        print(f"Blocked IP {ip_address} using netsh.")
-    else:
-        print(f"Unsupported platform for blocking IP: {system_platform}")
 
+    if system_platform == "Linux":
+        # Use iptables to block the IP address on Linux
+        command = f"sudo iptables -A INPUT -s {ip_address} -j DROP"
+        try:
+            subprocess.run(command, shell=True, check=True)
+            print(f"Blocked IP {ip_address} using iptables.")
+        except subprocess.CalledProcessError as e:
+            print(f"Failed to block IP {ip_address}: {e}")
+    elif system_platform == "Windows":
+        # Use netsh to block the IP address on Windows
+        command = f"netsh advfirewall firewall add rule name=\"Block {ip_address}\" dir=in action=block remoteip={ip_address}"
+        try:
+            subprocess.run(command, shell=True, check=True)
+            print(f"Blocked IP {ip_address} using netsh.")
+        except subprocess.CalledProcessError as e:
+            print(f"Failed to block IP {ip_address}: {e}")
+    else:
+        print(f"Unsupported platform: {system_platform}. Cannot block IP {ip_address}.")
 
 
 def capture_packets_with_detection(model):
