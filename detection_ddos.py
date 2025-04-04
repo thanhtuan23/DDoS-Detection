@@ -144,7 +144,7 @@ def capture_packets_with_detection(model):
     
     # Try to capture from both WiFi and Ethernet interfaces
     if system_platform == "Linux":
-        interfaces = ["eth0", "wlan0"]  # Common Linux interface names
+        interfaces = ["eth0", "wlan0","ens33"]  # Common Linux interface names
         for iface in interfaces:
             try:
                 print(f"Attempting to capture on interface: {iface}")
