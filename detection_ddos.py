@@ -137,6 +137,9 @@ def detect_ddos(packet, model):
                 if src_ip not in detected_ips:
                     detection_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     log_entry = f"[{detection_time}] DDoS attack detected from IP: {src_ip}"
+
+                    # Block the IP address
+                    block_ip(src_ip)
                     
                     # Print to console
                     print(log_entry)
@@ -174,6 +177,18 @@ def packet_callback_with_detection(packet, model):
     # We don't need to print packet summary for every packet anymore
     # Only print when DDoS is detected
     detect_ddos(packet, model)
+
+
+#block iptables
+def block_ip(ip_address):
+    system_platform = platform.system()
+    if system_platform == "Linux":
+        os.system(f"iptables -A INPUT -s {ip_address} -j DROP")
+    elif system_platform == "Windows":
+        os.system(f"netsh advfirewall firewall add rule name=\"Block {ip_address}\" dir=in action=block remoteip={ip_address}")
+    else:
+        print(f"Unsupported platform: {system_platform}")
+
 
 def capture_packets_with_detection(model):
     system_platform = platform.system()
