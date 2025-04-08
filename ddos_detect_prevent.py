@@ -7,7 +7,6 @@ import time
 from datetime import datetime
 import os
 import sys
-import threading
 
 # Store detected DDoS IPs to avoid duplicate reports
 detected_ips = set()
@@ -111,67 +110,77 @@ def extract_features_from_packet(packet):
     return features
 
 def block_ip(ip_address):
-    """Block the given IP address using iptables"""
+    """Block the given IP address using system-specific firewall commands"""
+    system_platform = platform.system()
+    
     # Print detailed information for debugging
-    print(f"Attempting to block IP: {ip_address}")
+    print(f"Attempting to block IP: {ip_address} on {system_platform}")
     
     try:
-        # Create a custom rule name including the IP to avoid duplicates
-        rule_name = f"BlockDDoS_{ip_address.replace('.', '_')}"
-        
-        # Direct iptables command
-        cmd = ["iptables", "-A", "INPUT", "-s", ip_address, "-j", "DROP"]
-        print(f"Executing command: {' '.join(cmd)}")
-        
-        # Execute the command (try without sudo first)
-        try:
+        if system_platform == "Linux":
+            # Check if running as root
+            # if os.geteuid() != 0:
+            #     print("Warning: Not running as root. IP blocking may fail.")
+            #     print("Try running the script with sudo.")
+            
+            # Use iptables to block the IP
+            cmd = ["iptables", "-A", "INPUT", "-s", ip_address, "-j", "DROP"]
+            print(f"Executing command: {' '.join(cmd)}")
             result = subprocess.run(cmd, capture_output=True, text=True)
             
             if result.returncode != 0:
-                # If it fails, try with sudo
-                sudo_cmd = ["sudo"] + cmd
-                print(f"Trying with sudo: {' '.join(sudo_cmd)}")
-                result = subprocess.run(sudo_cmd, capture_output=True, text=True)
-                
+                print(f"Command failed with error: {result.stderr}")
+                # Try alternative approach with sudo
+                print("Trying with sudo...")
+                cmd = ["sudo", "iptables", "-A", "INPUT", "-s", ip_address, "-j", "DROP"]
+                result = subprocess.run(cmd, capture_output=True, text=True)
                 if result.returncode != 0:
-                    print(f"Failed to block IP using iptables: {result.stderr}")
-                    return False
+                    print(f"Sudo command also failed: {result.stderr}")
                 else:
-                    print(f"Successfully blocked IP {ip_address} using sudo iptables")
-                    return True
+                    print("Successfully blocked IP with sudo")
             else:
-                print(f"Successfully blocked IP {ip_address}")
-                return True
+                print("Successfully blocked IP")
                 
-        except Exception as e:
-            print(f"Exception during iptables execution: {e}")
+        # elif system_platform == "Windows":
+            # Running with admin privileges check
+            import ctypes
+            is_admin = ctypes.windll.shell32.IsUserAnAdmin() != 0
+            if not is_admin:
+                print("Warning: Not running with administrator privileges. IP blocking may fail.")
+                print("Try running the script as Administrator.")
+                
+            # Use netsh to block the IP on Windows
+            rule_name = f"BlockDDoS_{ip_address.replace('.', '_')}"
+            cmd = ["netsh", "advfirewall", "firewall", "add", "rule", 
+                   f"name={rule_name}", "dir=in", "action=block", 
+                   f"remoteip={ip_address}"]
+            print(f"Executing command: {' '.join(cmd)}")
+            result = subprocess.run(cmd, capture_output=True, text=True)
             
-            # Fallback to using a temporary script with sudo
-            print("Falling back to temporary script method...")
-            block_script = f"/tmp/block_ip_{ip_address.replace('.', '_')}.sh"
-            
-            with open(block_script, "w") as f:
-                f.write("#!/bin/bash\n")
-                f.write(f"iptables -A INPUT -s {ip_address} -j", "DROP\n")
-            
-            # Make executable
-            os.chmod(block_script, 0o755)
-            
-            # Execute with sudo
-            script_result = subprocess.run(["sudo", block_script], capture_output=True, text=True)
-            
-            if script_result.returncode == 0:
-                print(f"Successfully blocked IP {ip_address} using script method")
-                return True
+            if result.returncode != 0:
+                print(f"Command failed with error: {result.stderr}")
+                # Try alternative approach for Windows
+                try:
+                    # Create a temporary batch file to execute with elevated privileges
+                    batch_file = f"block_ip_{ip_address.replace('.', '_')}.bat"
+                    with open(batch_file, 'w') as f:
+                        f.write(f'netsh advfirewall firewall add rule name="{rule_name}" dir=in action=block remoteip={ip_address}\n')
+                    
+                    # Execute the batch file with elevated privileges
+                    print(f"Trying to execute batch file: {batch_file}")
+                    ctypes.windll.shell32.ShellExecuteW(None, "runas", "cmd.exe", f"/c {batch_file}", None, 1)
+                    print(f"Batch file execution initiated. Check for UAC prompt.")
+                except Exception as e:
+                    print(f"Alternative approach failed: {e}")
             else:
-                print(f"Failed to block IP using script method: {script_result.stderr}")
-                return False
-                
+                print("Successfully blocked IP")
+        else:
+            print(f"Unsupported platform: {system_platform}")
+            
     except Exception as e:
         print(f"Failed to block IP {ip_address}: {e}")
         import traceback
         traceback.print_exc()
-        return False
 
 def detect_ddos(packet, model):
     global ddos_logs, last_log_time, detected_ips
@@ -182,10 +191,6 @@ def detect_ddos(packet, model):
             # Extract source IP
             src_ip = packet[IP].src
             
-            # Skip localhost
-            if src_ip.startswith('127.'):
-                return
-                
             # Extract features from the packet
             features = extract_features_from_packet(packet)
             
@@ -194,7 +199,7 @@ def detect_ddos(packet, model):
             
             if prediction == 1:  # DDoS attack detected
                 # Add debugging information
-                print(f"\nDDoS detected from IP: {src_ip}")
+                print(f"DDoS detected from IP: {src_ip}")
                 print(f"Packet details: {packet.summary()}")
                 
                 # Only log if this IP hasn't been detected in this session
@@ -209,13 +214,17 @@ def detect_ddos(packet, model):
                     # Add to log collection
                     ddos_logs.append(log_entry)
                     
+                    # Add to detected IPs set
+                    detected_ips.add(src_ip)
+                
                     # Block the IP address
-                    if block_ip(src_ip):
-                        # Add to detected IPs set only if blocking was successful
-                        detected_ips.add(src_ip)
-                        ddos_logs.append(f"[{detection_time}] Successfully blocked IP: {src_ip}")
-                    else:
-                        ddos_logs.append(f"[{detection_time}] Failed to block IP: {src_ip}")
+                    block_ip(src_ip)
+                    
+                    # Verify IP was blocked
+                    # This is platform-specific, so we'll just check our detected_ips set
+                    if src_ip in detected_ips:
+                        print(f"IP {src_ip} has been processed for blocking")
+                        ddos_logs.append(f"[{detection_time}] Attempted to block IP: {src_ip}")
                 else:
                     print(f"IP {src_ip} already detected and processed")
             
@@ -245,14 +254,23 @@ def write_logs_to_file():
         print(f"Logs written to {filename}")
 
 def packet_callback_with_detection(packet, model):
-    # Pass the packet to detection logic
+    # We don't need to print packet summary for every packet anymore
+    # Only print when DDoS is detected
     detect_ddos(packet, model)
 
 def check_admin_privileges():
     """Check if the script is running with administrative privileges"""
     system_platform = platform.system()
     
-    if system_platform == "Linux":
+    if system_platform == "Windows":
+        import ctypes
+        is_admin = ctypes.windll.shell32.IsUserAnAdmin() != 0
+        if not is_admin:
+            print("WARNING: Not running with administrator privileges.")
+            print("IP blocking will not work without admin rights.")
+            print("Please restart the script as Administrator.")
+            return False
+    elif system_platform == "Linux":
         if os.geteuid() != 0:
             print("WARNING: Not running as root.")
             print("IP blocking will not work without root privileges.")
@@ -262,84 +280,67 @@ def check_admin_privileges():
     print("Running with sufficient privileges.")
     return True
 
-def sniff_interface(interface, model):
-    """Sniff packets on a specific interface"""
-    print(f"Starting packet capture on interface: {interface}")
-    try:
-        sniff(iface=interface, prn=lambda pkt: packet_callback_with_detection(pkt, model), store=False)
-    except Exception as e:
-        print(f"Error capturing on interface {interface}: {e}")
-
-def sniff_all_interfaces(model):
-    """Capture packets on all available interfaces using threads"""
+def capture_packets_with_detection(model):
     system_platform = platform.system()
     
+    print(f"Starting DDoS detection on {system_platform}...")
+    print("Only logging detected DDoS IPs. Log files will be created every 1 minute.")
+    
+    # Try to capture from both WiFi and Ethernet interfaces
     if system_platform == "Linux":
-        # Get all network interfaces
-        try:
-            interfaces = [iface for iface in os.listdir('/sys/class/net/') 
-                         if iface != 'lo']  # Exclude loopback
-        except:
-            print("Failed to list network interfaces. Using default method.")
-            try:
-                # Fallback to sniffing without specifying interface
-                print("Starting packet capture on all interfaces (default mode)")
-                sniff(prn=lambda pkt: packet_callback_with_detection(pkt, model), store=False)
-                return
-            except Exception as e:
-                print(f"Failed to capture packets: {e}")
-                return
-                
-        # Create threads for each interface
-        threads = []
+        interfaces = os.listdir('/sys/class/net/')  # Dynamically list all network interfaces
+        
+        # Try each interface one by one
         for iface in interfaces:
-            thread = threading.Thread(target=sniff_interface, args=(iface, model))
-            thread.daemon = True  # Allow the program to exit even if thread is running
-            threads.append(thread)
-            
-        # Start all threads
-        for thread in threads:
-            thread.start()
-            
-        print(f"Started packet capture on {len(threads)} interfaces")
-        
-        # Also start a thread for the default interface (no iface specified)
-        def sniff_default():
             try:
-                print("Also capturing on default interface")
-                sniff(prn=lambda pkt: packet_callback_with_detection(pkt, model), store=False)
+                print(f"Attempting to capture on interface: {iface}")
+                # This line will block until an error occurs or the program is terminated
+                sniff(iface=iface, prn=lambda pkt: packet_callback_with_detection(pkt, model), store=False)
+                # If we get here, sniffing was successful on this interface
+                break
             except Exception as e:
-                print(f"Error capturing on default interface: {e}")
-                
-        default_thread = threading.Thread(target=sniff_default)
-        default_thread.daemon = True
-        default_thread.start()
+                print(f"Failed to capture on {iface}: {e}")
         
-        # Wait for threads - note that these won't actually end until program is terminated
+        # If all explicit interfaces failed, try default interface
         try:
-            while True:
-                # Check if any threads are still alive
-                alive = False
-                for thread in threads + [default_thread]:
-                    if thread.is_alive():
-                        alive = True
-                        break
-                
-                if not alive:
-                    print("All capture threads have stopped")
-                    break
-                    
-                time.sleep(1)
-        except KeyboardInterrupt:
-            print("Capture interrupted by user")
-    else:
-        # For other platforms, use default capture
-        print("Platform not explicitly supported. Using default capture method.")
-        try:
-            print("Starting packet capture on all interfaces")
+            print("Attempting to capture on default interface")
             sniff(prn=lambda pkt: packet_callback_with_detection(pkt, model), store=False)
         except Exception as e:
-            print(f"Failed to capture packets: {e}")
+            print(f"Failed to capture on default interface: {e}")
+    
+    # elif system_platform == "Windows":
+    #     # Get all available interfaces
+    #     from scapy.arch.windows import get_windows_if_list
+    #     interfaces = get_windows_if_list()
+        
+    #     if interfaces:
+    #         # Try to find WiFi and Ethernet interfaces
+    #         for interface in interfaces:
+    #             try:
+    #                 iface_name = interface['name']
+    #                 print(f"Attempting to capture on interface: {iface_name}")
+    #                 sniff(iface=iface_name, prn=lambda pkt: packet_callback_with_detection(pkt, model), store=False)
+    #                 # If we get here, sniffing was successful on this interface
+    #                 break
+    #             except Exception as e:
+    #                 print(f"Failed to capture on {iface_name}: {e}")
+            
+    #         # If all explicit interfaces failed, try default interface
+    #         try:
+    #             print("Attempting to capture on default interface")
+    #             sniff(prn=lambda pkt: packet_callback_with_detection(pkt, model), store=False)
+    #         except Exception as e:
+    #             print(f"Failed to capture on default interface: {e}")
+    #     else:
+    #         # Fallback to default interface
+    #         try:
+    #             print("Attempting to capture on default interface")
+    #             sniff(prn=lambda pkt: packet_callback_with_detection(pkt, model), store=False)
+    #         except Exception as e:
+    #             print(f"Failed to capture on default interface: {e}")
+    
+    else:
+        print(f"Unsupported platform: {system_platform}")
 
 if __name__ == "__main__":
     # Ensure log directory exists
@@ -361,16 +362,13 @@ if __name__ == "__main__":
         exit(1)
     
     try:
+        
         # Register handler to save logs on exit
         import atexit
         atexit.register(write_logs_to_file)
         
-        # Start packet capture on all interfaces
-        print("Starting DDoS detection on all network interfaces...")
-        print("Log files will be created every minute")
-        
-        # Use the new multi-interface capture function
-        sniff_all_interfaces(model)
+        # Start packet capture
+        capture_packets_with_detection(model)
     except KeyboardInterrupt:
         print("\nStopping DDoS detection. Writing final logs...")
         write_logs_to_file()
