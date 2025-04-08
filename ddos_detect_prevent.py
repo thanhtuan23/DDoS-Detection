@@ -171,9 +171,12 @@ def detect_ddos(packet, model):
                     
                     # Add to detected IPs set
                     detected_ips.add(src_ip)
+
+                    # Print the type and value of src_ip for debugging
+                    print(f"DEBUG - Type of src_ip: {type(src_ip)}, Value: {src_ip}")
                 
                     # Block the IP address
-                    block_ip(src_ip)
+                    block_ip(str(src_ip))
                     
                     # Verify IP was blocked
                     if src_ip in detected_ips:
