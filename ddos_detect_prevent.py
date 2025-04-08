@@ -109,33 +109,122 @@ def extract_features_from_packet(packet):
     
     return features
 
-def block_ip(ip_address):
-    """Block the given IP address using iptables"""
-    print(f"Attempting to block IP: {ip_address}")
+def block_ip_comprehensive(ip_address):
+    """Block the given IP address using multiple iptables rules for different protocols"""
+    ip_address = str(ip_address)
+    print(f"Attempting comprehensive block of IP: {ip_address}")
     
     try:
-        # Use iptables to block the IP
-        cmd = ["iptables", "-A", "INPUT", "-s", ip_address, "-j", "DROP"]
-        print(f"Executing command: {' '.join(cmd)}")
+        # Block common protocols individually for better filtering
+        protocols = ["tcp", "udp", "icmp"]
+        success = False
+        
+        for proto in protocols:
+            # Insert rule at the beginning of INPUT chain (-I instead of -A)
+            cmd = ["iptables", "-I", "INPUT", "-p", proto, "-s", ip_address, "-j", "DROP"]
+            print(f"Executing: {' '.join(cmd)}")
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                print(f"Command failed with error: {result.stderr}")
+                # Try with sudo
+                cmd = ["sudo", "iptables", "-I", "INPUT", "-p", proto, "-s", ip_address, "-j", "DROP"]
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                if result.returncode != 0:
+                    print(f"Sudo command also failed for {proto}: {result.stderr}")
+                else:
+                    print(f"Successfully blocked {proto} traffic from IP with sudo")
+                    success = True
+            else:
+                print(f"Successfully blocked {proto} traffic from IP")
+                success = True
+        
+        # Also add a general rule to catch all other protocols
+        cmd = ["iptables", "-I", "INPUT", "-s", ip_address, "-j", "DROP"]
+        print(f"Executing: {' '.join(cmd)}")
         result = subprocess.run(cmd, capture_output=True, text=True)
         
         if result.returncode != 0:
-            print(f"Command failed with error: {result.stderr}")
-            # Try alternative approach with sudo
-            print("Trying with sudo...")
-            cmd = ["sudo", "iptables", "-A", "INPUT", "-s", ip_address, "-j", "DROP"]
+            print(f"General rule command failed: {result.stderr}")
+            # Try with sudo
+            cmd = ["sudo", "iptables", "-I", "INPUT", "-s", ip_address, "-j", "DROP"]
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode != 0:
-                print(f"Sudo command also failed: {result.stderr}")
+                print(f"General rule sudo command also failed: {result.stderr}")
             else:
-                print("Successfully blocked IP with sudo")
+                print("Successfully added general block rule with sudo")
+                success = True
         else:
-            print("Successfully blocked IP")
-                
+            print("Successfully added general block rule")
+            success = True
+            
+        # Save iptables rules to persist across reboots
+        try:
+            print("Saving iptables rules...")
+            save_cmd = ["iptables-save"]
+            save_result = subprocess.run(save_cmd, capture_output=True, text=True)
+            
+            if save_result.returncode != 0:
+                print(f"Failed to save iptables rules: {save_result.stderr}")
+                # Try with sudo
+                save_cmd = ["sudo", "iptables-save"]
+                save_result = subprocess.run(save_cmd, capture_output=True, text=True)
+                if save_result.returncode != 0:
+                    print(f"Sudo iptables-save also failed: {save_result.stderr}")
+                else:
+                    print("Successfully saved iptables rules with sudo")
+            else:
+                print("Successfully saved iptables rules")
+        except Exception as e:
+            print(f"Error saving iptables rules: {e}")
+            
+        return success
+            
     except Exception as e:
         print(f"Failed to block IP {ip_address}: {e}")
         import traceback
         traceback.print_exc()
+        return False
+
+def verify_ip_blocked(ip_address):
+    """Verify if the IP is actually blocked in iptables rules"""
+    ip_address = str(ip_address)
+    print(f"Verifying if IP {ip_address} is blocked...")
+    
+    try:
+        cmd = ["iptables", "-L", "INPUT", "-v", "-n"]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode == 0:
+            output = result.stdout
+            if ip_address in output:
+                print(f"Verification SUCCESS: IP {ip_address} is in iptables rules")
+                return True
+            else:
+                print(f"Verification FAILED: IP {ip_address} not found in iptables rules")
+                # Try with sudo
+                cmd = ["sudo", "iptables", "-L", "INPUT", "-v", "-n"]
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                if result.returncode == 0:
+                    output = result.stdout
+                    if ip_address in output:
+                        print(f"Verification SUCCESS with sudo: IP {ip_address} is in iptables rules")
+                        return True
+                return False
+        else:
+            print(f"Failed to check iptables: {result.stderr}")
+            # Try with sudo
+            cmd = ["sudo", "iptables", "-L", "INPUT", "-v", "-n"]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode == 0:
+                output = result.stdout
+                if ip_address in output:
+                    print(f"Verification SUCCESS with sudo: IP {ip_address} is in iptables rules")
+                    return True
+            return False
+    except Exception as e:
+        print(f"Error verifying IP block: {e}")
+        return False
 
 def detect_ddos(packet, model):
     global ddos_logs, last_log_time, detected_ips
@@ -143,8 +232,8 @@ def detect_ddos(packet, model):
     try:
         # Only process packets with IP layer
         if IP in packet:
-            # Extract source IP
-            src_ip = packet[IP].src
+            # Extract source IP and convert to string explicitly
+            src_ip = str(packet[IP].src)
             
             # Extract features from the packet
             features = extract_features_from_packet(packet)
@@ -171,17 +260,17 @@ def detect_ddos(packet, model):
                     
                     # Add to detected IPs set
                     detected_ips.add(src_ip)
-
-                    # Print the type and value of src_ip for debugging
-                    print(f"DEBUG - Type of src_ip: {type(src_ip)}, Value: {src_ip}")
                 
-                    # Block the IP address
-                    block_ip(str(src_ip))
+                    # Block the IP address with comprehensive approach
+                    block_success = block_ip_comprehensive(src_ip)
                     
                     # Verify IP was blocked
-                    if src_ip in detected_ips:
-                        print(f"IP {src_ip} has been processed for blocking")
-                        ddos_logs.append(f"[{detection_time}] Attempted to block IP: {src_ip}")
+                    if verify_ip_blocked(src_ip):
+                        print(f"IP {src_ip} verified as blocked in iptables")
+                        ddos_logs.append(f"[{detection_time}] Successfully blocked IP: {src_ip}")
+                    else:
+                        print(f"WARNING: Could not verify block for IP {src_ip}")
+                        ddos_logs.append(f"[{detection_time}] Warning: Could not verify block for IP: {src_ip}")
                 else:
                     print(f"IP {src_ip} already detected and processed")
             
@@ -258,8 +347,8 @@ if __name__ == "__main__":
     # Check for root privileges first
     has_root = check_admin_privileges()
     if not has_root:
-        print("Continuing anyway, but IP blocking may not work.")
-        print("Press Ctrl+C to exit or any key to continue...")
+        print("WARNING: This script requires root privileges for proper IP blocking.")
+        print("Press Ctrl+C to exit or any key to continue with limited functionality...")
         input()
     
     model_path = "random_forest_model.pkl"  # Path to your pre-trained model
@@ -274,6 +363,21 @@ if __name__ == "__main__":
         # Register handler to save logs on exit
         import atexit
         atexit.register(write_logs_to_file)
+        
+        # Test block capability if running as root
+        # if has_root:
+        #     print("Testing iptables functionality...")
+        #     test_ip = "127.0.0.1"  # Use localhost for testing
+        #     try:
+        #         # Add a test rule and immediately remove it
+        #         subprocess.run(["iptables", "-A", "INPUT", "-s", test_ip, "-j", "DROP"], 
+        #                       check=True, capture_output=True)
+        #         subprocess.run(["iptables", "-D", "INPUT", "-s", test_ip, "-j", "DROP"], 
+        #                       check=True, capture_output=True)
+        #         print("iptables test successful!")
+        #     except subprocess.CalledProcessError as e:
+        #         print(f"iptables test failed: {e}")
+        #         print("IP blocking may not work correctly.")
         
         # Start packet capture
         capture_packets_with_detection(model)
